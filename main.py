@@ -1,15 +1,13 @@
 import os
-import requests
 import random
-import pickle
 import sys
-import time
+import cloudscraper # Ye hai wo Jadui Tool
+import pickle
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 
-# --- CONFIGURATION ---
-# Zyada pages add kiye hain taaki video milne ke chances 100% ho
+# --- CONFIG ---
 TARGET_SUBS = ["FunnyAnimals", "AnimalsBeingDerps", "animalsdoingstuff", "AnimalsBeingFunny", "aww", "MadeMeSmile", "BeAmazed"]
 HISTORY_FILE = "posted_history.txt"
 
@@ -21,24 +19,25 @@ def get_posted_ids():
 def save_id(post_id):
     with open(HISTORY_FILE, "a") as f: f.write(post_id + "\n")
 
-# --- 2. DOWNLOADER (Updated Limit) ---
+# --- 2. REDDIT DOWNLOADER (CLOUDSCRAPER - NO KEYS NEEDED) ---
 def get_video():
-    print("🕵️ Scanning Reddit (Deep Search)...")
+    print("🕵️ Scanning Reddit (Bypassing Security)...")
+    
+    # Cloudscraper create kar rahe hain (Fake Browser)
+    scraper = cloudscraper.create_scraper()
+    
     random.shuffle(TARGET_SUBS)
     posted_ids = get_posted_ids()
-    
-    # Fake Browser Header (Zaroori hai)
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0'}
     
     for sub in TARGET_SUBS:
         print(f"   Checking r/{sub}...")
         try:
-            # CHANGE: Limit 50 kar di hai (Pehle 15 thi)
-            url = f"https://www.reddit.com/r/{sub}/hot.json?limit=50"
-            resp = requests.get(url, headers=headers)
+            # Seedha JSON URL hit karenge
+            url = f"https://www.reddit.com/r/{sub}/hot.json?limit=30"
+            resp = scraper.get(url) # Requests ki jagah Scraper use kiya
             
             if resp.status_code != 200:
-                print(f"   ⚠️ Skip r/{sub} (Status: {resp.status_code})")
+                print(f"   ⚠️ Blocked/Skip r/{sub} (Status: {resp.status_code})")
                 continue
             
             data = resp.json()
@@ -50,7 +49,7 @@ def get_video():
                 title = p_data['title']
                 p_url = f"https://www.reddit.com{p_data['permalink']}"
                 
-                # Filter: Sirf Video + Not Posted + Not NSFW
+                # Filter: Video + Not NSFW + Not Posted
                 is_video = p_data.get('is_video', False) or 'v.redd.it' in p_data.get('url', '')
                 is_nsfw = p_data.get('over_18', False)
                 
@@ -58,23 +57,21 @@ def get_video():
                     print(f"   🎯 Video Found: {title}")
                     
                     # Download Command
-                    # yt-dlp best quality download karega
                     cmd = f'yt-dlp "{p_url}" -o "video.mp4" --merge-output-format mp4'
                     exit_code = os.system(cmd)
                     
                     if exit_code == 0 and os.path.exists("video.mp4"):
-                        # File size check (Too small = glitch)
-                        if os.path.getsize("video.mp4") > 50000: 
+                        if os.path.getsize("video.mp4") > 50000:
                             return "video.mp4", title, pid, sub
                         else:
-                            print("   ❌ File too small (Glitch), skipping...")
+                            print("   ❌ File too small, skipping...")
                     else:
-                        print("   ❌ Download fail, Next try...")
+                        print("   ❌ Download fail...")
                         
         except Exception as e:
-            print(f"   ⚠️ Error scanning {sub}: {e}")
+            print(f"   ⚠️ Error in r/{sub}: {e}")
             continue
-    
+            
     return None, None, None, None
 
 # --- 3. YOUTUBE UPLOAD ---
@@ -82,26 +79,24 @@ def upload_youtube(video, title, sub):
     print("▶️ Uploading to YouTube...")
     
     if not os.path.exists('token.pickle'):
-        print("❌ CRITICAL: 'token.pickle' file missing in Repository!")
+        print("❌ Error: 'token.pickle' missing! Upload it again.")
         return False
         
     try:
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
         
-        # Token Refresh Logic
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
 
         youtube = build('youtube', 'v3', credentials=creds)
         
-        # Metadata
         body = {
             "snippet": {
                 "title": f"{title[:90]} #shorts", 
-                "description": f"Funny moment from r/{sub}\n#funny #shorts #animals #cute #viral",
-                "tags": ["funny", "animals", "shorts", "cute", "viral"],
-                "categoryId": "15" # Pets & Animals
+                "description": f"Funny video from r/{sub}\n#funny #shorts #animals #cute",
+                "tags": ["funny", "animals", "shorts", "cute"],
+                "categoryId": "15"
             },
             "status": {
                 "privacyStatus": "public",
@@ -111,11 +106,11 @@ def upload_youtube(video, title, sub):
         
         media = MediaFileUpload(video, chunksize=-1, resumable=True)
         youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
-        print("✅ SUCCESS: Video Uploaded Successfully!")
+        print("✅ SUCCESS! Video Uploaded.")
         return True
         
     except Exception as e:
-        print(f"❌ UPLOAD ERROR: {e}")
+        print(f"❌ YouTube Upload Error: {e}")
         return False
 
 # --- MAIN ---
@@ -126,9 +121,9 @@ if __name__ == "__main__":
         success = upload_youtube(vid, title, source)
         if success:
             save_id(pid)
-            if os.path.exists(vid): os.remove(vid) # Cleanup
+            if os.path.exists(vid): os.remove(vid)
         else:
-            sys.exit(1) # Fail Workflow
+            sys.exit(1)
     else:
-        print("🔴 All Pages Checked. No NEW video found.")
-        sys.exit(1) # Fail Workflow so you know
+        print("🔴 All checked. No NEW video found.")
+        sys.exit(1)
