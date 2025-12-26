@@ -1,7 +1,7 @@
 import os
 import random
 import sys
-import cloudscraper # Ye hai wo Jadui Tool
+import feedparser # RSS Reader
 import pickle
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -19,54 +19,64 @@ def get_posted_ids():
 def save_id(post_id):
     with open(HISTORY_FILE, "a") as f: f.write(post_id + "\n")
 
-# --- 2. REDDIT DOWNLOADER (CLOUDSCRAPER - NO KEYS NEEDED) ---
+# --- 2. REDDIT DOWNLOADER (VIA RSS FEED - NO KEYS) ---
 def get_video():
-    print("🕵️ Scanning Reddit (Bypassing Security)...")
-    
-    # Cloudscraper create kar rahe hain (Fake Browser)
-    scraper = cloudscraper.create_scraper()
+    print("🕵️ Scanning Reddit via RSS Feeds (Smart Mode)...")
     
     random.shuffle(TARGET_SUBS)
     posted_ids = get_posted_ids()
     
+    # User-Agent lagana zaroori hai taaki Reddit ko lage Browser hai
+    USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    
     for sub in TARGET_SUBS:
         print(f"   Checking r/{sub}...")
         try:
-            # Seedha JSON URL hit karenge
-            url = f"https://www.reddit.com/r/{sub}/hot.json?limit=30"
-            resp = scraper.get(url) # Requests ki jagah Scraper use kiya
+            # RSS URL (No API needed)
+            rss_url = f"https://www.reddit.com/r/{sub}/hot.rss?limit=25"
             
-            if resp.status_code != 200:
-                print(f"   ⚠️ Blocked/Skip r/{sub} (Status: {resp.status_code})")
+            # Feed Fetch karna
+            feed = feedparser.parse(rss_url, agent=USER_AGENT)
+            
+            if not feed.entries:
+                print(f"   ⚠️ Blocked/Empty r/{sub}")
                 continue
             
-            data = resp.json()
-            posts = data['data']['children']
-            
-            for post in posts:
-                p_data = post['data']
-                pid = p_data['id']
-                title = p_data['title']
-                p_url = f"https://www.reddit.com{p_data['permalink']}"
+            for entry in feed.entries:
+                # RSS mein ID link se nikalni padti hai
+                # Link format: https://www.reddit.com/r/sub/comments/ID/title/
+                try:
+                    pid = entry.link.split('/comments/')[1].split('/')[0]
+                except:
+                    pid = entry.id
                 
-                # Filter: Video + Not NSFW + Not Posted
-                is_video = p_data.get('is_video', False) or 'v.redd.it' in p_data.get('url', '')
-                is_nsfw = p_data.get('over_18', False)
+                title = entry.title
+                p_url = entry.link
                 
-                if is_video and not is_nsfw and pid not in posted_ids:
-                    print(f"   🎯 Video Found: {title}")
+                # Filter: Check karo content mein video tag hai ya link
+                # RSS mein exact "is_video" nahi hota, to hum content guess karte hain
+                content_str = str(entry.content[0].value) if 'content' in entry else ""
+                
+                # Smart Check: Agar link "v.redd.it" hai ya content mein video player hai
+                is_video_candidate = 'v.redd.it' in content_str or 'video' in content_str or 'v.redd.it' in p_url
+                
+                if is_video_candidate and pid not in posted_ids:
+                    print(f"   🎯 Potential Video Found: {title}")
                     
-                    # Download Command
+                    # yt-dlp ko bolenge check kare aur download kare
                     cmd = f'yt-dlp "{p_url}" -o "video.mp4" --merge-output-format mp4'
                     exit_code = os.system(cmd)
                     
                     if exit_code == 0 and os.path.exists("video.mp4"):
+                        # Size Check (Choti files glitch ho sakti hain)
                         if os.path.getsize("video.mp4") > 50000:
+                            print("   ✅ Video Validated!")
                             return "video.mp4", title, pid, sub
                         else:
-                            print("   ❌ File too small, skipping...")
+                            print("   ❌ File too small/Image found, skipping...")
+                            if os.path.exists("video.mp4"): os.remove("video.mp4")
                     else:
-                        print("   ❌ Download fail...")
+                        print("   ❌ Not a video or Download fail...")
                         
         except Exception as e:
             print(f"   ⚠️ Error in r/{sub}: {e}")
@@ -125,5 +135,5 @@ if __name__ == "__main__":
         else:
             sys.exit(1)
     else:
-        print("🔴 All checked. No NEW video found.")
+        print("🔴 All RSS Feeds checked. No NEW video found.")
         sys.exit(1)
