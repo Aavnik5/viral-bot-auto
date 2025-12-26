@@ -9,7 +9,7 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # History save karne ki permission zaroori hai
+      contents: write # History save karne ki permission
     
     steps:
       - name: Checkout Code
@@ -18,14 +18,16 @@ jobs:
       - name: Setup Python (Updated)
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10' # <--- Ye Naya Version hai (Error Fix)
+          python-version: '3.11' # <--- Updated to 3.11 (Latest & Stable)
 
       - name: Install Tools
         run: |
-          sudo apt-get install ffmpeg
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
           pip install -r requirements.txt
 
       - name: Run Bot Script
+        # RSS Method (Smart Mode) ke liye kisi API Key ki zaroorat nahi hai
         run: python main.py
 
       - name: Save History
@@ -34,5 +36,7 @@ jobs:
           git config --global user.name "AutoBot"
           git config --global user.email "bot@github.com"
           git add posted_history.txt
+          # Pehle pull karenge taaki conflict na ho
+          git pull origin main --rebase || echo "Already up to date"
           git commit -m "New video posted" || echo "No changes to commit"
           git push
