@@ -1,175 +1,125 @@
 import os
-import random
 import sys
-import feedparser
-import requests
 import pickle
+import io
 import time
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
 # --- CONFIG ---
-TARGET_SUBS = ["FunnyAnimals", "AnimalsBeingDerps", "animalsdoingstuff", "AnimalsBeingFunny", "aww", "MadeMeSmile", "BeAmazed"]
-HISTORY_FILE = "posted_history.txt"
+# Aapka Folder ID (Maine set kar diya hai)
+DRIVE_FOLDER_ID = "1YmOj9mjty1dUgbZnlmTRsCGbnUL96Kcd"
 
-# --- NEW: Working Cobalt Servers List (Backup ke saath) ---
-COBALT_INSTANCES = [
-    "https://co.wuk.sh/api/json",          # Sabse reliable
-    "https://cobalt.kwiatekmiki.pl/api/json",
-    "https://cobalt.kanzen.moe/api/json",
-    "https://api.cobalt.tools/api/json"    # Official (kabhi kabhi chalta hai)
-]
-
-# --- 1. HISTORY CHECK ---
-def get_posted_ids():
-    if not os.path.exists(HISTORY_FILE): return []
-    with open(HISTORY_FILE, "r") as f: return f.read().splitlines()
-
-def save_id(post_id):
-    with open(HISTORY_FILE, "a") as f: f.write(post_id + "\n")
-
-# --- 2. DOWNLOADER (MULTI-SERVER COBALT) ---
-def download_via_cobalt(url):
-    print(f"   🚀 Trying to download: {url}")
-    
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "ViralBot/2.0"
-    }
-    
-    body = {
-        "url": url,
-        "vCodec": "h264",
-        "videoQuality": "720"
-    }
-
-    # Har server try karega
-    for instance in COBALT_INSTANCES:
-        try:
-            print(f"      Trying Server: {instance} ...")
-            response = requests.post(instance, headers=headers, json=body, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Link dhundna
-                video_link = None
-                if "url" in data:
-                    video_link = data["url"]
-                elif "picker" in data: # Kabhi kabhi picker format aata hai
-                    for item in data["picker"]:
-                        if item["type"] == "video":
-                            video_link = item["url"]
-                            break
-                
-                if video_link:
-                    print("      ✅ Link mil gaya! Downloading video...")
-                    video_content = requests.get(video_link).content
-                    with open("video.mp4", "wb") as f:
-                        f.write(video_content)
-                    return True
-                else:
-                    print(f"      ⚠️ Server replied but no URL: {data}")
-            else:
-                print(f"      ⚠️ Server Error: {response.status_code}")
-                
-        except Exception as e:
-            print(f"      ❌ Connection Error with {instance}")
-            continue # Agla server try karo
-            
-    print("   ❌ All Cobalt servers failed.")
-    return False
-
-def get_video():
-    print("🕵️ Scanning Reddit via RSS...")
-    random.shuffle(TARGET_SUBS)
-    posted_ids = get_posted_ids()
-    USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-    
-    for sub in TARGET_SUBS:
-        print(f"   Checking r/{sub}...")
-        try:
-            rss_url = f"https://www.reddit.com/r/{sub}/hot.rss?limit=25"
-            feed = feedparser.parse(rss_url, agent=USER_AGENT)
-            
-            if not feed.entries: continue
-            
-            for entry in feed.entries:
-                try:
-                    pid = entry.link.split('/comments/')[1].split('/')[0]
-                except: continue
-                
-                title = entry.title
-                p_url = entry.link
-                
-                # Check agar video hai
-                is_video_candidate = 'v.redd.it' in p_url or 'v.redd.it' in str(entry)
-                
-                if is_video_candidate and pid not in posted_ids:
-                    print(f"   🎯 Target Found: {title}")
-                    
-                    # Download Step
-                    success = download_via_cobalt(p_url)
-                    
-                    if success and os.path.exists("video.mp4"):
-                        # Size Check
-                        if os.path.getsize("video.mp4") > 50000:
-                            return "video.mp4", title, pid, sub
-                        else:
-                            print("   ❌ File too small...")
-                            os.remove("video.mp4")
-                    else:
-                        print("   ❌ Download fail...")
-                        
-        except Exception as e:
-            continue
-            
-    return None, None, None, None
-
-# --- 3. YOUTUBE UPLOAD ---
-def upload_youtube(video, title, sub):
-    print("▶️ Uploading to YouTube...")
+# --- AUTHENTICATION ---
+def get_creds():
     if not os.path.exists('token.pickle'):
-        print("❌ Error: 'token.pickle' missing!")
-        return False
-        
-    try:
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+        print("❌ Error: token.pickle missing! Make sure to upload the NEW token.")
+        return None
+    with open('token.pickle', 'rb') as token:
+        creds = pickle.load(token)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    return creds
 
+# --- 1. DOWNLOAD FROM DRIVE ---
+def get_video_from_drive():
+    try:
+        creds = get_creds()
+        if not creds: return None, None, None
+
+        service = build('drive', 'v3', credentials=creds)
+        
+        print(f"📂 Scanning Drive Folder: {DRIVE_FOLDER_ID}")
+        
+        # Folder mein MP4 files dhundho jo Trash mein na hon
+        query = f"'{DRIVE_FOLDER_ID}' in parents and mimeType contains 'video/' and trashed=false"
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+
+        if not files:
+            print("😴 Drive Folder khali hai. Koi video nahi mili.")
+            return None, None, None
+
+        # Pehli video uthao
+        file = files[0]
+        file_id = file['id']
+        file_name = file['name']
+        
+        # File name se '.mp4' hata kar Title banao
+        title = os.path.splitext(file_name)[0].replace("_", " ")
+        
+        print(f"⬇️ Downloading: {file_name}")
+        
+        request = service.files().get_media(fileId=file_id)
+        fh = io.FileIO("video.mp4", "wb")
+        downloader = MediaIoBaseDownload(fh, request)
+        
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+            # print(f"Download {int(status.progress() * 100)}%.")
+        
+        print("✅ Download Complete.")
+        return "video.mp4", title, file_id
+        
+    except Exception as e:
+        print(f"❌ Drive Error: {e}")
+        return None, None, None
+
+# --- 2. UPLOAD TO YOUTUBE ---
+def upload_youtube(video_path, title):
+    try:
+        creds = get_creds()
         youtube = build('youtube', 'v3', credentials=creds)
+        
+        print(f"▶️ Uploading to YouTube: {title}")
         
         body = {
             "snippet": {
                 "title": f"{title[:90]} #shorts", 
-                "description": f"Funny video from r/{sub}\n#funny #shorts #animals #cute",
-                "tags": ["funny", "animals", "shorts", "cute"],
-                "categoryId": "15"
+                "description": f"Enjoy this video!\n#shorts #funny #viral #trending",
+                "tags": ["shorts", "viral", "funny", "trending"],
+                "categoryId": "23" # Comedy
             },
-            "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
+            "status": {
+                "privacyStatus": "public",
+                "selfDeclaredMadeForKids": False
+            }
         }
         
-        media = MediaFileUpload(video, chunksize=-1, resumable=True)
+        media = MediaFileUpload(video_path, chunksize=-1, resumable=True)
         youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
-        print("✅ SUCCESS! Video Uploaded.")
+        print("✅ SUCCESS! Video Uploaded to YouTube.")
         return True
+    
     except Exception as e:
-        print(f"❌ Upload Error: {e}")
+        print(f"❌ YouTube Upload Error: {e}")
         return False
 
-# --- MAIN ---
+# --- 3. DELETE FROM DRIVE ---
+def delete_from_drive(file_id):
+    try:
+        creds = get_creds()
+        service = build('drive', 'v3', credentials=creds)
+        
+        # File ko Trash mein move karein
+        service.files().update(fileId=file_id, body={'trashed': True}).execute()
+        print("🗑️ Video Drive se delete kar di gayi hai (Moved to Trash).")
+    except Exception as e:
+        print(f"⚠️ Delete Error: {e}")
+
+# --- MAIN RUNNER ---
 if __name__ == "__main__":
-    vid, title, pid, source = get_video()
-    if vid:
-        if upload_youtube(vid, title, source):
-            save_id(pid)
-            if os.path.exists(vid): os.remove(vid)
+    vid_path, title, file_id = get_video_from_drive()
+    
+    if vid_path:
+        success = upload_youtube(vid_path, title)
+        if success:
+            delete_from_drive(file_id) # Kaam hone ke baad delete
+            if os.path.exists(vid_path): os.remove(vid_path) # GitHub cleanup
         else:
-            sys.exit(1)
+            sys.exit(1) # Fail action if upload fails
     else:
-        print("🔴 No video found.")
-        sys.exit(1)
+        # Agar video nahi mili, toh Action ko fail mat karo, bas ruk jao
+        print("🔴 No videos to upload today.")
