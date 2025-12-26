@@ -2,23 +2,23 @@ name: Daily Auto Shorts
 
 on:
   schedule:
-    - cron: '30 6 * * *' # Roz subah 6:30 UTC (India Time: 12:00 PM Dopehar)
-  workflow_dispatch: # Button manual run ke liye
+    - cron: '30 6 * * *' # Roz subah 6:30 UTC (India: 12:00 PM Dopehar)
+  workflow_dispatch: # Manual Button
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # History save karne ki permission
+      contents: write # History save karne ki permission zaroori hai
     
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Setup Python
+      - name: Setup Python (Updated)
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10' # <--- Ye Naya Version hai (Error Fix)
 
       - name: Install Tools
         run: |
@@ -34,5 +34,5 @@ jobs:
           git config --global user.name "AutoBot"
           git config --global user.email "bot@github.com"
           git add posted_history.txt
-          git commit -m "New video posted" || echo "No changes"
+          git commit -m "New video posted" || echo "No changes to commit"
           git push
