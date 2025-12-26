@@ -2,7 +2,9 @@ import os
 import random
 import sys
 import feedparser # RSS Reader
+import requests   # API calling
 import pickle
+import time
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
@@ -19,67 +21,82 @@ def get_posted_ids():
 def save_id(post_id):
     with open(HISTORY_FILE, "a") as f: f.write(post_id + "\n")
 
-# --- 2. REDDIT DOWNLOADER (VIA RSS FEED - NO KEYS) ---
+# --- 2. DOWNLOADER (USING COBALT API - The Middleman) ---
+def download_via_cobalt(url):
+    print(f"   🚀 Cobalt API ko bhej raha hu: {url}")
+    try:
+        # Cobalt API Request
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "ViralBot/1.0"
+        }
+        body = {
+            "url": url,
+            "vCodec": "h264" # MP4 format ensure karne ke liye
+        }
+        
+        # API Hit
+        response = requests.post("https://api.cobalt.tools/api/json", headers=headers, json=body)
+        data = response.json()
+        
+        if "url" in data:
+            video_link = data["url"]
+            print("   ✅ Cobalt se link mil gaya! Downloading...")
+            
+            # Final Video Download
+            video_content = requests.get(video_link).content
+            with open("video.mp4", "wb") as f:
+                f.write(video_content)
+            return True
+        else:
+            print(f"   ❌ Cobalt failed: {data}")
+            return False
+            
+    except Exception as e:
+        print(f"   ⚠️ Cobalt Error: {e}")
+        return False
+
 def get_video():
-    print("🕵️ Scanning Reddit via RSS Feeds (Smart Mode)...")
-    
+    print("🕵️ Scanning Reddit via RSS...")
     random.shuffle(TARGET_SUBS)
     posted_ids = get_posted_ids()
-    
-    # User-Agent lagana zaroori hai taaki Reddit ko lage Browser hai
     USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
     
     for sub in TARGET_SUBS:
         print(f"   Checking r/{sub}...")
         try:
-            # RSS URL (No API needed)
-            rss_url = f"https://www.reddit.com/r/{sub}/hot.rss?limit=25"
-            
-            # Feed Fetch karna
+            rss_url = f"https://www.reddit.com/r/{sub}/hot.rss?limit=20"
             feed = feedparser.parse(rss_url, agent=USER_AGENT)
             
-            if not feed.entries:
-                print(f"   ⚠️ Blocked/Empty r/{sub}")
-                continue
+            if not feed.entries: continue
             
             for entry in feed.entries:
-                # RSS mein ID link se nikalni padti hai
-                # Link format: https://www.reddit.com/r/sub/comments/ID/title/
                 try:
                     pid = entry.link.split('/comments/')[1].split('/')[0]
-                except:
-                    pid = entry.id
+                except: continue
                 
                 title = entry.title
                 p_url = entry.link
                 
-                # Filter: Check karo content mein video tag hai ya link
-                # RSS mein exact "is_video" nahi hota, to hum content guess karte hain
-                content_str = str(entry.content[0].value) if 'content' in entry else ""
-                
-                # Smart Check: Agar link "v.redd.it" hai ya content mein video player hai
-                is_video_candidate = 'v.redd.it' in content_str or 'video' in content_str or 'v.redd.it' in p_url
+                # Filter: Link check + Not posted
+                is_video_candidate = 'v.redd.it' in p_url or 'v.redd.it' in str(entry)
                 
                 if is_video_candidate and pid not in posted_ids:
-                    print(f"   🎯 Potential Video Found: {title}")
+                    print(f"   🎯 Target Found: {title}")
                     
-                    # yt-dlp ko bolenge check kare aur download kare
-                    cmd = f'yt-dlp "{p_url}" -o "video.mp4" --merge-output-format mp4'
-                    exit_code = os.system(cmd)
+                    # Yahan hum yt-dlp ki jagah COBALT use karenge
+                    success = download_via_cobalt(p_url)
                     
-                    if exit_code == 0 and os.path.exists("video.mp4"):
-                        # Size Check (Choti files glitch ho sakti hain)
+                    if success and os.path.exists("video.mp4"):
                         if os.path.getsize("video.mp4") > 50000:
-                            print("   ✅ Video Validated!")
                             return "video.mp4", title, pid, sub
                         else:
-                            print("   ❌ File too small/Image found, skipping...")
-                            if os.path.exists("video.mp4"): os.remove("video.mp4")
+                            print("   ❌ File too small...")
                     else:
-                        print("   ❌ Not a video or Download fail...")
+                        print("   ❌ Download fail...")
                         
         except Exception as e:
-            print(f"   ⚠️ Error in r/{sub}: {e}")
             continue
             
     return None, None, None, None
@@ -87,53 +104,43 @@ def get_video():
 # --- 3. YOUTUBE UPLOAD ---
 def upload_youtube(video, title, sub):
     print("▶️ Uploading to YouTube...")
-    
     if not os.path.exists('token.pickle'):
-        print("❌ Error: 'token.pickle' missing! Upload it again.")
+        print("❌ Error: 'token.pickle' missing!")
         return False
         
     try:
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
-        
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
 
         youtube = build('youtube', 'v3', credentials=creds)
-        
         body = {
             "snippet": {
                 "title": f"{title[:90]} #shorts", 
-                "description": f"Funny video from r/{sub}\n#funny #shorts #animals #cute",
-                "tags": ["funny", "animals", "shorts", "cute"],
+                "description": f"Funny video from r/{sub}\n#funny #shorts #animals",
+                "tags": ["funny", "animals", "shorts"],
                 "categoryId": "15"
             },
-            "status": {
-                "privacyStatus": "public",
-                "selfDeclaredMadeForKids": False
-            }
+            "status": {"privacyStatus": "public", "selfDeclaredMadeForKids": False}
         }
-        
         media = MediaFileUpload(video, chunksize=-1, resumable=True)
         youtube.videos().insert(part="snippet,status", body=body, media_body=media).execute()
         print("✅ SUCCESS! Video Uploaded.")
         return True
-        
     except Exception as e:
-        print(f"❌ YouTube Upload Error: {e}")
+        print(f"❌ Upload Error: {e}")
         return False
 
 # --- MAIN ---
 if __name__ == "__main__":
     vid, title, pid, source = get_video()
-    
     if vid:
-        success = upload_youtube(vid, title, source)
-        if success:
+        if upload_youtube(vid, title, source):
             save_id(pid)
             if os.path.exists(vid): os.remove(vid)
         else:
             sys.exit(1)
     else:
-        print("🔴 All RSS Feeds checked. No NEW video found.")
+        print("🔴 No video found.")
         sys.exit(1)
